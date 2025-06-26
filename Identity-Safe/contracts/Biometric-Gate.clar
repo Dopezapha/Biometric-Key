@@ -12,6 +12,9 @@
 (define-constant biometric-data-validity-period u7776000)
 (define-constant rate-limiting-window-duration u60)
 (define-constant max-requests-per-window u10)
+(define-constant max-string-length u64)
+(define-constant max-biometric-type-length u20)
+(define-constant max-uint-value u340282366920938463463374607431768211455)
 
 ;; Error Response Codes
 (define-constant ERR-UNAUTHORIZED-ACCESS (err u100))
@@ -26,6 +29,8 @@
 (define-constant ERR-BIOMETRIC-DATA-EXPIRED (err u109))
 (define-constant ERR-CONFIDENCE-THRESHOLD-INVALID (err u110))
 (define-constant ERR-MAXIMUM-FAILED-ATTEMPTS-REACHED (err u111))
+(define-constant ERR-INVALID-INPUT-LENGTH (err u112))
+(define-constant ERR-INVALID-INPUT-VALUE (err u113))
 
 ;; System State Variables
 (define-data-var system-operational-status bool true)
@@ -120,6 +125,22 @@
   )
 )
 
+(define-private (validate-string-length (input-string (string-ascii 64)) (max-length uint))
+  (<= (len input-string) max-length)
+)
+
+(define-private (validate-biometric-type-length (input-string (string-ascii 20)) (max-length uint))
+  (<= (len input-string) max-length)
+)
+
+(define-private (validate-uint-value (input-value uint))
+  (<= input-value max-uint-value)
+)
+
+(define-private (validate-buffer-length (input-buffer (buff 32)) (expected-length uint))
+  (is-eq (len input-buffer) expected-length)
+)
+
 (define-private (process-authentication-failure (failed-user-principal principal))
   (let (
     (current-user-profile (unwrap-panic (map-get? user-identity-profiles { user-principal: failed-user-principal })))
@@ -195,6 +216,11 @@
   (origin-ip-hash (buff 32))
 )
   (let ((log-entry-id (var-get authentication-log-counter)))
+    ;; Validate inputs before using them
+    (asserts! (validate-string-length template-identifier max-string-length) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-string-length device-identifier max-string-length) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-buffer-length origin-ip-hash u32) ERR-INVALID-INPUT-LENGTH)
+    
     (map-set authentication-activity-records
       { activity-log-identifier: log-entry-id }
       {
@@ -244,6 +270,8 @@
 (define-public (configure-maximum-authentication-failures (max-failure-attempts uint))
   (begin
     (asserts! (verify-contract-administrator-privileges) ERR-UNAUTHORIZED-ACCESS)
+    (asserts! (validate-uint-value max-failure-attempts) ERR-INVALID-INPUT-VALUE)
+    (asserts! (> max-failure-attempts u0) ERR-INVALID-INPUT-VALUE)
     (var-set maximum-allowed-failed-attempts max-failure-attempts)
     (ok true)
   )
@@ -252,6 +280,8 @@
 (define-public (set-account-lockout-duration (lockout-duration-seconds uint))
   (begin
     (asserts! (verify-contract-administrator-privileges) ERR-UNAUTHORIZED-ACCESS)
+    (asserts! (validate-uint-value lockout-duration-seconds) ERR-INVALID-INPUT-VALUE)
+    (asserts! (> lockout-duration-seconds u0) ERR-INVALID-INPUT-VALUE)
     (var-set account-lockout-duration-seconds lockout-duration-seconds)
     (ok true)
   )
@@ -304,6 +334,12 @@
   (let ((registering-user-principal tx-sender))
     (asserts! (var-get system-operational-status) ERR-UNAUTHORIZED-ACCESS)
     (asserts! (validate-user-account-active-status registering-user-principal) ERR-USER-PROFILE-NOT-FOUND)
+    
+    ;; Validate input parameters
+    (asserts! (validate-string-length unique-template-identifier max-string-length) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-biometric-type-length biometric-type-classification max-biometric-type-length) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-buffer-length encrypted-template-hash u32) ERR-INVALID-INPUT-LENGTH)
+    
     (asserts! (is-none (map-get? biometric-identity-templates 
                         { user-principal: registering-user-principal, biometric-template-identifier: unique-template-identifier })) 
               ERR-BIOMETRIC-TEMPLATE-EXISTS)
@@ -345,6 +381,10 @@
   (begin
     (asserts! (var-get system-operational-status) ERR-UNAUTHORIZED-ACCESS)
     (asserts! (or (verify-contract-administrator-privileges) (is-eq tx-sender target-user-principal)) ERR-INSUFFICIENT-PERMISSIONS)
+    
+    ;; Validate input parameter
+    (asserts! (validate-string-length template-identifier-to-disable max-string-length) ERR-INVALID-INPUT-LENGTH)
+    
     (asserts! (is-some (map-get? biometric-identity-templates 
                         { user-principal: target-user-principal, biometric-template-identifier: template-identifier-to-disable })) 
               ERR-BIOMETRIC-TEMPLATE-NOT-FOUND)
@@ -369,6 +409,11 @@
   (let ((device-owner-principal tx-sender))
     (asserts! (var-get system-operational-status) ERR-UNAUTHORIZED-ACCESS)
     (asserts! (validate-user-account-active-status device-owner-principal) ERR-USER-PROFILE-NOT-FOUND)
+    
+    ;; Validate input parameters
+    (asserts! (validate-string-length unique-device-identifier max-string-length) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-buffer-length device-fingerprint-hash u32) ERR-INVALID-INPUT-LENGTH)
+    
     (asserts! (is-none (map-get? authorized-device-registry 
                         { user-principal: device-owner-principal, device-unique-identifier: unique-device-identifier })) 
               ERR-BIOMETRIC-TEMPLATE-EXISTS)
@@ -404,6 +449,13 @@
     (asserts! (var-get system-operational-status) ERR-UNAUTHORIZED-ACCESS)
     (asserts! (validate-user-account-active-status authenticating-user-principal) ERR-USER-PROFILE-NOT-FOUND)
     (asserts! (not (check-user-account-lockout-status authenticating-user-principal)) ERR-MAXIMUM-FAILED-ATTEMPTS-REACHED)
+    
+    ;; Validate input parameters
+    (asserts! (validate-string-length biometric-template-id max-string-length) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-string-length authentication-device-id max-string-length) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-buffer-length submitted-biometric-hash u32) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-buffer-length request-origin-ip-hash u32) ERR-INVALID-INPUT-LENGTH)
+    (asserts! (validate-uint-value measured-confidence-score) ERR-INVALID-INPUT-VALUE)
     
     ;; Enforce rate limiting controls
     (try! (enforce-request-rate-limiting authenticating-user-principal))
